@@ -60,26 +60,27 @@ export default {
   ],
   onwarn: () => {},
   plugins: [
-    webWorkerLoader({
-      targetPlatform: 'browser',
-      plugins: [
-        resolve(),
-        commonjs(),
-        ...(isProd
-          ? [
-              terser({
-                compress: {
-                  drop_console: true,
-                  drop_debugger: true,
-                },
-                output: {
-                  comments: false,
-                },
-              }),
-            ]
-          : []),
-      ],
-    }),
+    webWorkerLoader(),
+    // webWorkerLoader({
+    //   targetPlatform: 'browser',
+    //   plugins: [
+    //     resolve(),
+    //     commonjs(),
+    //     ...(isProd
+    //       ? [
+    //           terser({
+    //             compress: {
+    //               drop_console: true,
+    //               drop_debugger: true,
+    //             },
+    //             output: {
+    //               comments: false,
+    //             },
+    //           }),
+    //         ]
+    //       : []),
+    //   ],
+    // }),
     alias({
       entries: [
         { find: '@', replacement: path.resolve(projectRootDir, './src') },

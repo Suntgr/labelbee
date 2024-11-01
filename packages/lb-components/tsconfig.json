@@ -20,7 +20,8 @@
     "skipLibCheck": true, // 忽略所有的声明文件（ *.d.ts）的类型检查。
     "lib": [
       "esnext",
-      "dom"
+      "dom",
+      "webworker"
     ], // 导入库类型定义
     "types": [
       "node"

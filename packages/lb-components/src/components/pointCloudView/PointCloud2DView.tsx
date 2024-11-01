@@ -1,16 +1,15 @@
+// @ts-nocheck
+
 import { getClassName } from '@/utils/dom';
 import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { PointCloudContainer } from './PointCloudLayout';
 import { PointCloudContext } from './PointCloudContext';
 import { connect } from 'react-redux';
 
-import { cKeyCode, EventBus } from '@labelbee/lb-annotation';
+import { cKeyCode, EventBus, pointCloudLidar2image, pointListLidar2Img } from '@labelbee/lb-annotation';
 import { LabelBeeContext } from '@/store/ctx';
 import { a2MapStateToProps, IA2MapStateProps } from '@/store/annotation/map';
-import {
-  ICalib,
-  IPolygonPoint,
-} from '@labelbee/lb-utils';
+import { ICalib, IPolygonPoint, toolStyleConverter } from '@labelbee/lb-utils';
 import PointCloud2DSingleView from './PointCloud2DSingleView';
 import TitleButton from './components/TitleButton';
 import { LeftOutlined } from '@ant-design/icons';
@@ -19,7 +18,11 @@ import EscSvg from '@/assets/annotation/common/icon_esc.svg';
 import LeftSquareOutlined from '@/assets/annotation/common/icon_left_squareOutlined.svg';
 import RightSquareOutlined from '@/assets/annotation/common/icon_right_squareOutlined.svg';
 import PointCloud2DViewWorker from 'web-worker:./2DViewWorker.ts';
+import PointCloud2DViewWorker1 from 'web-worker:./2DViewWorker-1.js';
 import { useLatest } from 'ahooks';
+import * as Comlink from 'comlink';
+import { getBoundingRect, isBoundingRectInImage } from '@/utils';
+import { isNumber } from 'lodash';
 
 // TODO, It will be deleted when the exported type of lb-annotation is work.
 export interface IAnnotationDataTemporarily {
@@ -138,35 +141,43 @@ const PointCloud2DView = ({
   const worker = useRef<Worker>()
 
   useEffect(() => {
-    if (
-      !loadPCDFileLoading &&
-      topViewInstance &&
-      currentData?.mappingImgList &&
-      currentData?.mappingImgList?.length > 0
-    ) {
-      if (worker.current) {
-        worker.current.terminate()
+    const runWorker = async () => {
+      if (
+        !loadPCDFileLoading &&
+        topViewInstance &&
+        currentData?.mappingImgList &&
+        currentData?.mappingImgList?.length > 0
+      ) {
+        if (worker.current) {
+          worker.current.terminate();
+        }
+        worker.current = new PointCloud2DViewWorker1() as Worker;
+        const annotations2dHandler = Comlink.wrap(worker.current);
+        // @ts-ignore
+        const newAnnotations2dList = await annotations2dHandler(
+          currentData,
+          displayPointCloudList,
+          selectedID,
+          highlightAttribute,
+          imageSizes,
+          config,
+          polygonList,
+          selectedIDs,
+          Comlink.proxy(pointCloudLidar2image),
+          Comlink.proxy(pointListLidar2Img),
+          Comlink.proxy(getBoundingRect),
+          Comlink.proxy(isBoundingRectInImage),
+          Comlink.proxy(toolStyleConverter),
+          Comlink.proxy(isNumber),
+        );
+        newAnnotations2dList && setAnnotations2d(newAnnotations2dList);
+        worker.current?.terminate();
       }
-      worker.current = new PointCloud2DViewWorker() as Worker;
-      worker.current.onmessage = (e: any) => {
-        const newAnnotations2dList = e.data;
-        setAnnotations2d(newAnnotations2dList);
-        worker.current?.terminate();
-      };
-      worker.current.postMessage({
-        currentData,
-        displayPointCloudList,
-        selectedID,
-        highlightAttribute,
-        imageSizes,
-        config,
-        polygonList,
-        selectedIDs,
-      });
-      return () => {
-        worker.current?.terminate();
-      };
-    }
+    };
+    runWorker()
+    return () => {
+      worker.current?.terminate();
+    };
   }, [
     displayPointCloudList,
     currentData?.mappingImgList,
@@ -178,6 +189,46 @@ const PointCloud2DView = ({
     selectedIDs,
   ]);
 
+  // useEffect(() => {
+  //   if (
+  //     !loadPCDFileLoading &&
+  //     topViewInstance &&
+  //     currentData?.mappingImgList &&
+  //     currentData?.mappingImgList?.length > 0
+  //   ) {
+  //     if (worker.current) {
+  //       worker.current.terminate()
+  //     }
+  //     worker.current = new PointCloud2DViewWorker() as Worker;
+  //     worker.current.onmessage = (e: any) => {
+  //       const newAnnotations2dList = e.data;
+  //       setAnnotations2d(newAnnotations2dList);
+  //       worker.current?.terminate();
+  //     };
+  //     worker.current.postMessage({
+  //       currentData,
+  //       displayPointCloudList,
+  //       selectedID,
+  //       highlightAttribute,
+  //       imageSizes,
+  //       config,
+  //       polygonList,
+  //       selectedIDs,
+  //     });
+  //     return () => {
+  //       worker.current?.terminate();
+  //     };
+  //   }
+  // }, [
+  //   displayPointCloudList,
+  //   currentData?.mappingImgList,
+  //   selectedID,
+  //   highlightAttribute,
+  //   loadPCDFileLoading,
+  //   polygonList,
+  //   imageSizes,
+  //   selectedIDs,
+  // ]);
 
   /** Keydown events only for `isEnlarge: true` scene  */
   const onKeyDown = useLatest((event: KeyboardEvent) => {
@@ -188,7 +239,7 @@ const PointCloud2DView = ({
     // Abort the sibling and the ancestor events propagation
     const abortSiblingAndAncestorPropagation = () => {
       event.stopImmediatePropagation();
-    }
+    };
 
     switch (event.keyCode) {
       case EKeyCode.Esc: {
