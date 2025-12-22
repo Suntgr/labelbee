@@ -684,6 +684,10 @@ export const PointCloudProvider: React.FC<PropsWithChildren<{}>> = ({ children }
       if (!mainViewInstance) {
         return;
       }
+      // mainViewInstance.updateRectList(pointCloudList ?? []);
+      // topViewInstance?.pointCloudInstance?.updateRectList(pointCloudList ?? []);
+      // console.log("🚀 ~ syncAllViewPointCloudColor ~ topViewInstance:", topViewInstance)
+      // return;
 
       const points = mainViewInstance.pointCloudObject;
 
@@ -725,22 +729,27 @@ export const PointCloudProvider: React.FC<PropsWithChildren<{}>> = ({ children }
       }
 
       try {
-        const highlightIndex = await mainViewInstance.getHighlightIndexByMappingImgList({
-          mappingImgList: newHighlight2DDataList ?? highlight2DDataList, // MappingImgList can be defined by through external param.
-          points: points.geometry.attributes.position.array,
-        });
+        // const highlightIndex = await mainViewInstance.getHighlightIndexByMappingImgList({
+        //   mappingImgList: newHighlight2DDataList ?? highlight2DDataList, // MappingImgList can be defined by through external param.
+        //   points: points.geometry.attributes.position.array,
+        // });
 
-        const colorInfo = await mainViewInstance?.highlightOriginPointCloud(
-          pointCloudList,
-          highlightIndex,
-          {
-            modifiedBoxIds,
-            resetAreas,
-          },
-        );
-        const { color, currentPCDSrc } = colorInfo ?? {};
-        color && topViewInstance?.pointCloudInstance?.updateColor(color, currentPCDSrc);
-        return color;
+        // const colorInfo = await mainViewInstance?.highlightOriginPointCloud(
+        //   pointCloudList,
+        //   highlightIndex,
+        //   {
+        //     modifiedBoxIds,
+        //     resetAreas,
+        //   },
+        // );
+        // const { color, currentPCDSrc } = colorInfo ?? {};
+        // color && topViewInstance?.pointCloudInstance?.updateColor(color, currentPCDSrc);
+        // return color;
+        const colorList = mainViewInstance.getAllAttributeColor(pointCloudList ?? []);
+        console.log("🚀 ~ syncAllViewPointCloudColor ~ pointCloudList:", pointCloudList)
+        mainViewInstance.updateRectList(pointCloudList ?? [], colorList ?? {});
+        topViewInstance?.pointCloudInstance?.updateRectList(pointCloudList ?? [], colorList ?? {});
+      console.log("🚀 ~ syncAllViewPointCloudColor ~ topViewInstance:", topViewInstance)
       } catch (error) {
         console.error('call highlightOriginPointCloud error', error);
       }

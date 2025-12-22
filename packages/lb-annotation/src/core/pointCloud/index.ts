@@ -6,6 +6,7 @@
 
 /*eslint import/no-unresolved: 0*/
 import * as THREE from 'three';
+import { Potree, PointCloudOctree, PointSizeType, PointColorType } from 'potree-core';
 import {
   PerspectiveShiftUtils,
   TMatrix4Tuple,
@@ -38,6 +39,7 @@ import { PointCloudSegmentOperation } from './segmentation';
 import PointCloudStore from './store';
 import PointCloudRender from './render';
 import EventListener from '../toolOperation/eventListener';
+import { patchPotreeMaterialForColorMap, updateColorMapFromRects } from './potreeUtils';
 
 interface IOrthographicCamera {
   left: number;
@@ -173,6 +175,12 @@ export class PointCloud extends EventListener {
 
   private view: string;
 
+  private potreeInstance?: Potree;
+
+  private potreePointClouds: PointCloudOctree[] = [];
+
+  private processedNodes = new Set<string>();
+
   constructor({
     container,
     noAppend,
@@ -272,6 +280,8 @@ export class PointCloud extends EventListener {
       }
       this.render();
     });
+
+    this.potreeInstance = new Potree();
   }
 
   public setHighlightColor(selectedId?: string) {
@@ -341,7 +351,8 @@ export class PointCloud extends EventListener {
   }
 
   public get pointCloudObject() {
-    return this.scene.getObjectByName(this.pointCloudObjectName) as THREE.Points;
+    // return this.scene.getObjectByName(this.pointCloudObjectName) as THREE.Points;
+    return this.potreePointClouds[0];
   }
 
   public initMsg() {
@@ -1114,6 +1125,33 @@ export class PointCloud extends EventListener {
     radius?: number,
     tipScopeList?: ITipScopeParams[],
   ) => {
+    // Potree 分支：同一个 PointCloud 实例只需要加载一次 PointCloudOctree。
+    // 否则反复 load 会导致 this.potreePointClouds 越堆越多（你日志里 topView potreeLen 从 1 到 2），
+    // 多个点云叠加/材质状态不一致，表现为颜色“先对一次、后续变黑且回不来”。
+    if (this.potreePointClouds.length > 0) {
+      return;
+    }
+
+    const pco = await this.potreeInstance?.loadPointCloud('metadata.json', 'http://10.151.112.16:8081/index/');
+
+    if (pco) {
+      const { material } = pco;
+      const box = pco.getBoundingBoxWorld();
+      material.heightMin = box.min.z;
+      material.heightMax = box.max.z;
+      material.size = this.pointsMaterialSize;
+      material.pointSizeType = PointSizeType.FIXED;
+      material.inputColorEncoding = 0;
+      material.outputColorEncoding = 0;
+
+      patchPotreeMaterialForColorMap(material as any);
+      material.needsUpdate = true;
+      this.potreePointClouds.push(pco);
+      this.scene.add(pco as any);
+      this.emit('loadPCDFileEnd');
+      this.render();
+      return;
+    }
     if (!src || this.workerLoading) return;
     this.clearPointCloud();
     /**
@@ -2263,9 +2301,224 @@ export class PointCloud extends EventListener {
 
     this.render();
   };
+  
+
+  public updateRectList(rectList: IPointCloudBox[], colorList: any) {
+    if (this.potreePointClouds.length === 0 || rectList.length === 0) return;
+    // 对当前实例里所有 potree 点云同步更新（避免只更新 [0]，其余仍保持旧状态导致“变黑/闪烁/回不来”）
+    this.potreePointClouds.forEach((pco) => {
+      const { material }: any = pco as any;
+      patchPotreeMaterialForColorMap(material);
+      const box = pco.getBoundingBoxWorld();
+      updateColorMapFromRects({
+        material,
+        rects: rectList as any,
+        boundsXY: { minX: box.min.x, minY: box.min.y, maxX: box.max.x, maxY: box.max.y },
+        resolution: 4096,
+        opacity: 1.0,
+        getColor: (r: any) => {
+          return colorList[r.attribute] ? `rgba(${colorList[r.attribute].rgba.join(',')})` : 'rgba(255, 255, 255, 1)';
+        },
+      });
+    });
+
+    this.render();
+  }
 
   public render() {
+    if (this.potreeInstance && this.potreePointClouds.length > 0) {
+      this.potreeInstance.updatePointClouds(this.potreePointClouds, this.camera as any, this.renderer as any);
+      this.applyHeightBasedColor();
+    }
+
     this.renderer.render(this.scene, this.camera);
+  }
+
+  private getJetColorMap(): number[][] {
+    const p: number[][] = new Array(256).fill(0).map(() => new Array(3).fill(0));
+    let s: number;
+  
+    // 生成 JET 颜色映射
+    for (s = 0; s < 32; s++) {
+      p[s][0] = 128 + 4 * s;
+      p[s][1] = 0;
+      p[s][2] = 0;
+    }
+    p[32][0] = 255;
+    p[32][1] = 0;
+    p[32][2] = 0;
+    for (s = 0; s < 63; s++) {
+      p[33 + s][0] = 255;
+      p[33 + s][1] = 4 + 4 * s;
+      p[33 + s][2] = 0;
+    }
+    p[96][0] = 254;
+    p[96][1] = 255;
+    p[96][2] = 2;
+    for (s = 0; s < 62; s++) {
+      p[97 + s][0] = 250 - 4 * s;
+      p[97 + s][1] = 255;
+      p[97 + s][2] = 6 + 4 * s;
+    }
+    p[159][0] = 1;
+    p[159][1] = 255;
+    p[159][2] = 254;
+    for (s = 0; s < 64; s++) {
+      p[160 + s][0] = 0;
+      p[160 + s][1] = 252 - s * 4;
+      p[160 + s][2] = 255;
+    }
+    for (s = 0; s < 32; s++) {
+      p[224 + s][0] = 0;
+      p[224 + s][1] = 0;
+      p[224 + s][2] = 252 - 4 * s;
+    }
+  
+    return p;
+  }
+
+  private applyHeightBasedColor() {
+    if (!this.potreeInstance || this.potreePointClouds.length === 0) return;
+  
+    // 获取高度范围（用于计算颜色）
+    // 使用固定的高度范围，与 PCDLoader 和 highlightWorker 保持一致（-7 到 3）
+    const heightMin = -7;
+    const heightMax = 3;
+    const heightRange = heightMax - heightMin;
+  
+    // 生成 JET 颜色映射（参考 PCDLoader）
+    const COLOR_MAP_JET = this.getJetColorMap();
+  
+    // 根据 z 值获取索引（参考 highlightWorker.js）
+    const getIndex = (z: number) => {
+      let clampedZ = z;
+      if (clampedZ < heightMin) clampedZ = heightMin;
+      if (clampedZ > heightMax) clampedZ = heightMax;
+      return Math.floor(((clampedZ - heightMin) / heightRange) * 255);
+    };
+  
+    // 遍历所有 Potree 点云的可见节点
+    // 注意：这里获取的 visibleNodes 是在 updatePointClouds 之后的最新节点
+    this.potreePointClouds.forEach((pco) => {
+      // 确保材质使用 RGB 颜色模式
+      const { material } = pco as any;
+      if (material) {
+        if (material.pointColorType !== PointColorType.RGB) {
+          material.pointColorType = PointColorType.RGB;
+          material.needsUpdate = true;
+          // 强制更新 shader
+          if (material.updateShaderSource) {
+            material.updateShaderSource();
+          }
+        }
+      }
+  
+      // 在 updatePointClouds 之后获取最新的可见节点
+      const { visibleNodes = [] } = pco;
+  
+      // 遍历每个可见节点
+      visibleNodes.forEach((node) => {
+        const { sceneNode } = node;
+        if (!sceneNode || !sceneNode.geometry) {
+          return;
+        }
+  
+        const { geometry } = sceneNode;
+        const { position: positionAttr } = geometry.attributes;
+        if (!positionAttr) {
+          return;
+        }
+  
+        const pointCount = positionAttr.count;
+  
+        // 检查材质是否使用 new_format
+        const useNewFormat = material?.newFormat === true;
+  
+        // 检查是否有 rgba 属性（Potree new_format 使用 rgba）
+        const { rgba: rgbaAttr } = geometry.attributes;
+        if (rgbaAttr || useNewFormat) {
+          // 如果使用 new_format 但没有 rgba 属性，创建一个
+          if (!rgbaAttr && useNewFormat) {
+            const rgbaArray = new Uint8Array(pointCount * 4);
+            const newRgbaAttr = new THREE.BufferAttribute(rgbaArray, 4, true);
+            geometry.setAttribute('rgba', newRgbaAttr as any);
+            // 重新获取
+            const newRgba = geometry.attributes.rgba;
+            if (newRgba) {
+              const rgbaArray2 = newRgba.array as Uint8Array;
+              const positions = positionAttr.array as Float32Array;
+              for (let i = 0; i < pointCount; i++) {
+                const z = positions[i * 3 + 2]; // 获取 z 坐标（高度）
+                const index = getIndex(z);
+                const [r, g, b] = COLOR_MAP_JET[index];
+                const rgbaIndex = i * 4;
+                rgbaArray2[rgbaIndex] = r; // R - JET 颜色
+                rgbaArray2[rgbaIndex + 1] = g; // G - JET 颜色
+                rgbaArray2[rgbaIndex + 2] = b; // B - JET 颜色
+                // A - 保持不透明（255），与 PCDLoader 和 highlightWorker 保持一致，只设置 RGB 颜色
+                rgbaArray2[rgbaIndex + 3] = 255;
+              }
+              newRgba.needsUpdate = true;
+            }
+          } else if (rgbaAttr) {
+            // 使用 rgba 格式：RGB 使用 JET 颜色，A 保持原有值（不覆盖）
+            // 检查是否已经有颜色，如果有则跳过（避免覆盖原始颜色）
+            const rgbaArray = rgbaAttr.array as Uint8Array;
+            const positions = positionAttr.array as Float32Array;
+  
+            // 检查前几个点是否已经有非零颜色（说明点云原本有颜色）
+            let hasOriginalColor = false;
+            for (let i = 0; i < Math.min(10, pointCount); i++) {
+              const rgbaIndex = i * 4;
+              if (rgbaArray[rgbaIndex] !== 0 || rgbaArray[rgbaIndex + 1] !== 0 || rgbaArray[rgbaIndex + 2] !== 0) {
+                hasOriginalColor = true;
+                break;
+              }
+            }
+  
+            // 如果点云原本有颜色，不覆盖（保持原有颜色）
+            if (!hasOriginalColor) {
+              for (let i = 0; i < pointCount; i++) {
+                const z = positions[i * 3 + 2]; // 获取 z 坐标（高度）
+                const index = getIndex(z);
+                const [r, g, b] = COLOR_MAP_JET[index];
+                const rgbaIndex = i * 4;
+                rgbaArray[rgbaIndex] = r; // R - JET 颜色
+                rgbaArray[rgbaIndex + 1] = g; // G - JET 颜色
+                rgbaArray[rgbaIndex + 2] = b; // B - JET 颜色
+                // A - 保持原有透明度值，不修改（与 highlightWorker 保持一致，只设置 RGB）
+              }
+              rgbaAttr.needsUpdate = true;
+            }
+          }
+        } else {
+          // 使用 color 格式：根据高度设置 JET 颜色
+          let colorAttr = geometry.attributes.color;
+          if (!colorAttr) {
+            // 如果没有 color 属性，创建一个
+            const colorArray = new Float32Array(pointCount * 3);
+            const newColorAttr = new THREE.BufferAttribute(colorArray, 3);
+            geometry.setAttribute('color', newColorAttr as any);
+            colorAttr = geometry.attributes.color;
+          }
+  
+          if (colorAttr) {
+            const colorArray = colorAttr.array as Float32Array;
+            const positions = positionAttr.array as Float32Array;
+            for (let i = 0; i < pointCount; i++) {
+              const z = positions[i * 3 + 2]; // 获取 z 坐标（高度）
+              const index = getIndex(z);
+              const [r, g, b] = COLOR_MAP_JET[index];
+              const colorIndex = i * 3;
+              colorArray[colorIndex] = r / 255; // R - JET 颜色（归一化到 0-1）
+              colorArray[colorIndex + 1] = g / 255; // G - JET 颜色
+              colorArray[colorIndex + 2] = b / 255; // B - JET 颜色
+            }
+            colorAttr.needsUpdate = true;
+          }
+        }
+      });
+    });
   }
 }
 
